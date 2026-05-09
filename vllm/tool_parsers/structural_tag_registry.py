@@ -328,3 +328,83 @@ def get_qwen_3_5_structural_tag(
         result = StructuralTag(format=SequenceFormat(elements=[prefix_tag, suffix_tag]))
 
     return result
+
+
+@register_model_structural_tag("glm_47")
+def get_glm_47_structural_tag(
+    tools: list[ChatCompletionToolsParam],
+    tool_choice: SimplifiedToolChoice,
+    reasoning: bool,
+) -> StructuralTag:
+    """Build GLM-4.7 / GLM-5 structural tags.
+
+    The GLM tool calling format uses XML-like tags:
+
+        <tool_call>function_name<arg_key>key</arg_key><arg_value>value</arg_value></tool_call>
+    """
+    tool_call_begin_prefix = "<tool_call>"
+    tool_call_end = "</tool_call>"
+    tool_call_trigger = "<tool_call>"
+    think_tag_end = "</think>"
+    think_exclude_tokens = ["<think>", "</think>"]
+    xml_style = "glm_xml"
+
+    if tool_choice == "auto":
+        tags = []
+        for tool in tools:
+            function = tool.function
+            parameters = _get_function_parameters(function)
+            tags.append(
+                TagFormat(
+                    begin=f"{tool_call_begin_prefix}{function.name}",
+                    content=JSONSchemaFormat(json_schema=parameters, style=xml_style),
+                    end=tool_call_end,
+                )
+            )
+
+        if tags:
+            suffix_tag = TriggeredTagsFormat(
+                triggers=[tool_call_trigger],
+                tags=tags,
+                excludes=think_exclude_tokens,
+            )
+        else:
+            suffix_tag = AnyTextFormat(excludes=think_exclude_tokens)
+
+    elif tool_choice == "forced":
+        if not tools:
+            raise ValueError("Forced tool choice must resolve to exactly one tool.")
+        function = tools[0].function
+        suffix_tag = TagFormat(
+            begin=f"{tool_call_begin_prefix}{function.name}",
+            content=JSONSchemaFormat(
+                json_schema=_get_function_parameters(function),
+                style=xml_style,
+            ),
+            end=tool_call_end,
+        )
+
+    elif tool_choice == "required":
+        tags = []
+        for tool in tools:
+            function = tool.function
+            parameters = _get_function_parameters(function)
+            tags.append(
+                TagFormat(
+                    begin=f"{tool_call_begin_prefix}{function.name}",
+                    content=JSONSchemaFormat(json_schema=parameters, style=xml_style),
+                    end=tool_call_end,
+                )
+            )
+        assert len(tags) > 0
+        suffix_tag = TagsWithSeparatorFormat(
+            tags=tags,
+            separator="",
+            at_least_one=True,
+        )
+
+    if not reasoning:
+        return StructuralTag(format=suffix_tag)
+
+    prefix_tag = TagFormat(begin="", content=AnyTextFormat(), end=think_tag_end)
+    return StructuralTag(format=SequenceFormat(elements=[prefix_tag, suffix_tag]))
