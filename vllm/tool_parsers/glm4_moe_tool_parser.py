@@ -173,7 +173,12 @@ class Glm4MoeModelToolParser(ToolParser):
         all.
         """
         if tools is None:
+            logger.debug("_is_string_type: tools is None for %s.%s",
+                         tool_name, arg_name)
             return False
+        if not tools:
+            logger.debug("_is_string_type: tools list is empty for %s.%s",
+                         tool_name, arg_name)
         for tool in tools:
             if tool.function.name != tool_name:
                 continue
@@ -480,16 +485,27 @@ class Glm4MoeModelToolParser(ToolParser):
                     # Open quote but no close — more content may arrive
                     parts.append(f'{key_json}: "{escaped}')
                 else:
-                    # Non-string partial: emit raw content verbatim.  When
-                    # the value completes, `_format_nonstring_value` prefers
-                    # the same raw text (not json.dumps re-normalized), so
-                    # the complete rendering extends this partial as a
-                    # strict prefix — streaming stays consistent for large
-                    # JSON objects/arrays without the whitespace-divergence
-                    # corruption previously reported for `companies`-style
-                    # args.  Malformed JSON falls back to re-serialization
-                    # and is caught by the prefix guard in _compute_args_diff.
-                    parts.append(f"{key_json}: {partial_content}")
+                    # Non-string partial: only stream raw for JSON
+                    # structures (objects/arrays) that benefit from
+                    # incremental delivery and whose raw text will
+                    # survive `_format_nonstring_value` unchanged (because
+                    # `json.loads` succeeds on the completed value).
+                    #
+                    # Scalar-looking partials (numbers, booleans, bare
+                    # strings like ISO datetimes) are NOT streamed here.
+                    # A partial like ``2026`` looks numeric, but may grow
+                    # into ``2026-05-10T16:35:00`` which fails
+                    # ``json.loads``.  ``_format_nonstring_value`` then
+                    # quotes it via ``_deserialize`` → ``json.dumps``,
+                    # diverging from the raw partial we already sent and
+                    # causing ``_compute_args_diff`` to drop all remaining
+                    # deltas (including the closing ``}``).  Buffering
+                    # scalars until ``</arg_value>`` closes avoids this;
+                    # the delay is negligible since scalar values are short.
+                    stripped = partial_content.lstrip()
+                    if stripped and stripped[0] in ('{', '['):
+                        parts.append(f"{key_json}: {partial_content}")
+                    # else: skip — will be emitted when the pair completes
 
         if not parts:
             return "{}" if is_complete else ""
